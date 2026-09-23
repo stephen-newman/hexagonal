@@ -1,11 +1,16 @@
 <!-- Sync Impact Report
-Version change: 1.0.1 -> 1.1.0 (MINOR: new normative directory structure template)
-Modified principles: none
-Added sections:
-- Appendix A: Normative Directory Structure Template (Gradle Groovy multi-module, adapted from emedina/hexagonal-spring-ref-app)
+Version change: 1.1.0 -> 1.2.0 (MINOR: three new principles + expanded guidance)
+Modified principles: none (I-IV unchanged)
+Added principles:
+- V. Contract-First REST Driving Ports (OpenAPI)
+- VI. Kafka + AsyncAPI for Domain Events & Commands (driven ports)
+- VII. External Web Services via Simple Proxy Web Services
+       (proxies are separately deployed internal services; accepted option 1)
+Added guidance: Technology Constraints integration stack; Appendix A
+  openapi/asyncapi artifacts, kafka-adapter, author-proxy-adapter,
+  proxy-gateway modules and dependency rules; PR contract gates
 Removed sections: none
 Follow-up TODOs: none
-Reference: https://github.com/emedina/hexagonal-spring-ref-app.git (Java 25, Spring Boot 4.0.1; Maven -> mapped to Gradle Groovy; added postgres-adapter)
 NOTE: This HTML comment is temporary scratch material for human review and MUST be removed before commit.
 -->
 
@@ -99,19 +104,101 @@ Rationale: constructor injection enforces immutability and explicit
 dependencies, while configuration-centralized wiring keeps the core free of
 framework metadata and makes object graphs auditable.
 
+### V. Contract-First REST Driving Ports (OpenAPI)
+
+Every driving port exposed over HTTP MUST be described by a versioned
+OpenAPI 3.1 document committed in the owning adapter module at
+`src/main/resources/openapi/<name>.openapi.yaml`.
+
+Rules:
+- Contract first: the contract MUST be authored and reviewed before
+  implementation; controllers MUST implement the generated server
+  interface, or equivalent contract tests MUST prove conformance.
+- Generated sources are build outputs; they MUST NOT be hand-edited and
+  MUST NOT be committed.
+- `domain` and `ports` MUST remain free of HTTP and OpenAPI types; contract
+  DTOs MUST map to commands/queries at the adapter edge.
+- Changes within a contract version MUST be additive; breaking changes MUST
+  bump the contract version and the affected path.
+- CI MUST validate every contract and MUST fail on drift between the
+  contract and the implementation.
+
+Rationale: the contract is the published interface, so making it the source
+of truth keeps consumers stable and the core HTTP-agnostic.
+
+### VI. Kafka + AsyncAPI for Domain Events & Commands
+
+All asynchronous integration - domain events and commands alike - MUST use
+Kafka, described by an AsyncAPI 3.x document committed in the Kafka adapter
+module at `src/main/resources/asyncapi/asyncapi.yaml`.
+
+Rules:
+- Driven ports stay core-owned and framework-free (`ports.out.*Publisher`,
+  `ports.out.*Consumer`) with plain-Java event and command types; Kafka
+  types MUST NEVER appear in `domain` or `ports`.
+- Topic names MUST follow `<domain>.<entity>.<event|command>.v<major>`;
+  topic, message key, and schema version MUST be declared in the AsyncAPI
+  document.
+- Schemas MUST evolve additively within a topic major version; breaking
+  changes MUST publish a new major topic version.
+- Consumers MUST be idempotent and MUST process by message key; messages
+  MUST carry an event or command id and an occurred-at timestamp.
+- Publication MUST NOT occur before the local transaction commits; where
+  emission must be atomic with a state change, an outbox SHOULD be used.
+
+Rationale: a documented, versioned asynchronous contract keeps publishers
+and consumers independently deployable and the core transport-agnostic.
+
+### VII. External Web Services via Simple Proxy Web Services
+
+External and third-party web services MUST be reached only through a simple
+proxy web service: an internal service deployed separately from the
+application. The application MUST NOT call vendor endpoints directly.
+
+Rules:
+- Each external system MUST have its own proxy web service exposing an
+  OpenAPI 3.1 contract; Principle V applies to proxies as well.
+- Proxies MUST be thin pass-throughs: request/response translation,
+  timeouts, retries, and error mapping only. Business rules and domain
+  dependencies MUST NOT exist in a proxy.
+- Vendor endpoints, credentials, and vendor-specific payloads MUST exist
+  ONLY inside the proxy service; vendor SDKs MUST NOT appear in any
+  application module.
+- The application MUST integrate through a `<system>-proxy-adapter` driven
+  adapter that implements the core-owned port and calls the proxy over HTTP
+  with a generated OpenAPI client, mapping proxy failures to core errors.
+- Application modules MUST NOT depend on proxy modules at build time, and
+  proxies MUST NOT depend on `domain`, `ports`, or `application-core`.
+
+Rationale: proxies absorb vendor churn and secrets, keeping core contracts
+stable and driven adapters stubbable in tests.
+
 ## Technology Constraints & Build Standards
 
 The stack is Java 25 with Spring Boot 4 for adapters and configuration
 only. The build tool is Gradle with Groovy DSL (`build.gradle`); Java,
-Spring Boot, and dependency versions MUST be locked in the build file and
-verified in CI. PostgreSQL is the REQUIRED primary relational database;
-persistence (Spring Data JPA/Hibernate against PostgreSQL), web
-(Spring MVC), and messaging clients MUST
-  reside ONLY in `adapters`; core MUST interact with them solely through
-  driven-port interfaces.
-- DTOs, JPA entities, and framework-specific models MUST be mapped at the
-  adapter edge; shared cross-layer models carrying framework annotations
-  are FORBIDDEN.
+Spring Boot, and dependency versions MUST be locked in the build files and
+verified in CI. The pinned integration stack is:
+
+- **Persistence**: PostgreSQL with Spring Data JPA/Hibernate, used ONLY in
+  `postgres-adapter`.
+- **HTTP driving interfaces**: REST described by OpenAPI 3.1 contracts;
+  springdoc and the openapi-generator Gradle tasks produce server
+  interfaces and clients.
+- **Asynchronous integration**: Apache Kafka (Spring for Apache Kafka) as
+  the only asynchronous transport, documented with AsyncAPI 3.x.
+- **External systems**: internal simple proxy web services (Principle VII)
+  consumed through generated OpenAPI clients.
+
+Rules:
+- Persistence, web (Spring MVC), and messaging clients MUST reside ONLY in
+  `adapters`; core MUST interact with them solely through driven-port
+  interfaces.
+- DTOs, JPA entities, Kafka message types, and other framework-specific
+  models MUST be mapped at the adapter edge; shared cross-layer models
+  carrying framework annotations are FORBIDDEN.
+- Contract documents (`openapi/`, `asyncapi/`) MUST be committed with the
+  owning adapter module and validated in CI.
 
 ## Development Workflow & Quality Gates
 
@@ -122,8 +209,10 @@ Every change MUST verify hexagonal compliance before merge:
 - Pull requests MUST include: (1) ArchUnit/boundary tests green,
   (2) plain-JUnit core tests without Spring context, (3) adapter tests for
   each new implementation, (4) a reviewer checklist confirming no Spring/JPA
-  imports in `domain`/`ports` and constructor injection only.
-- Violations of Principles I-IV MUST block merge; justified exceptions
+  imports in `domain`/`ports` and constructor injection only,
+  (5) OpenAPI/AsyncAPI contract validation with no implementation drift,
+  (6) Kafka schema compatibility check for any broker change.
+- Violations of Principles I-VII MUST block merge; justified exceptions
   require a constitution amendment, not an ad-hoc waiver.
 
 ## Appendix A: Normative Directory Structure Template
@@ -135,7 +224,9 @@ Gradle (Groovy DSL) multi-module layout, adapted from the reference
 architecture https://github.com/emedina/hexagonal-spring-ref-app.git
 (Java 25, Spring Boot 4.0.1; reference uses Maven — mapped here to Gradle
 Groovy per constitution stack pin, with a `postgres-adapter` added as the
-REQUIRED production persistence adapter). `<pkg>` is the base package
+REQUIRED production persistence adapter, plus `kafka-adapter`,
+`<system>-proxy-adapter` and the separately deployed `proxy-gateway` for
+Principles VI and VII). `<pkg>` is the base package
 (e.g., `com.example.<app>`).
 
 ```text
@@ -210,22 +301,28 @@ application-core/                      # aggregator only (no sources at this lev
         └── test/                      # port contract tests if applicable
 ```
 
-### Adapters & Assembly (api, postgres, in-memory, external, wiring)
+### Adapters & Assembly (api, postgres, kafka, in-memory, proxy adapters, proxy gateway, wiring)
 
 ```text
 api-adapter/                           # DRIVING adapter (REST in)
-├── build.gradle                       # Spring Web ONLY here; depends on input-ports + shared-kernel
+├── build.gradle                       # Spring Web + openapi-generator ONLY here
 └── src/
-    ├── main/java/<pkg>/api/
-    │   ├── ArticleController.java     # @RestController; depends ONLY on ports/in interfaces
-    │   ├── ArticleApi.java            # API contract (routes, OpenAPI)
-    │   ├── ApiRequest.java            # inbound DTOs
-    │   ├── ApiResponse.java           # outbound DTOs
-    │   ├── ApiMapper.java             # request/response <-> command/query/DTO
-    │   ├── ApiErrorHandler.java
-    │   ├── ApiGlobalExceptionHandler.java
-    │   └── ApiResultUtils.java        # Either<Error, T> -> ResponseEntity mapping
-    └── test/java/<pkg>/api/           # controller slice tests, mocked use cases
+    ├── main/
+    │   ├── java/<pkg>/api/
+    │   │   ├── ArticleController.java # @RestController; implements the generated
+    │   │   │                          # interface; depends ONLY on ports/in
+    │   │   ├── ArticleApi.java        # routes/annotations bound to the contract
+    │   │   ├── ApiRequest.java        # inbound DTOs
+    │   │   ├── ApiResponse.java       # outbound DTOs
+    │   │   ├── ApiMapper.java         # request/response <-> command/query/DTO
+    │   │   ├── ApiErrorHandler.java
+    │   │   ├── ApiGlobalExceptionHandler.java
+    │   │   └── ApiResultUtils.java    # Either<Error, T> -> ResponseEntity mapping
+    │   └── resources/openapi/
+    │       └── business-registration.openapi.yaml  # OpenAPI 3.1 SOURCE OF TRUTH
+    └── test/java/<pkg>/api/
+        ├── ArticleControllerTest.java
+        └── ApiContractTest.java       # contract-vs-implementation drift check
 
 postgres-adapter/                      # DRIVEN adapter (REQUIRED production persistence)
 ├── build.gradle                       # Spring Data JPA/Hibernate + Postgres driver ONLY here
@@ -244,12 +341,39 @@ in-memory-repositories/                # DRIVEN adapter (test/dev ONLY; NEVER pr
     │   └── InMemoryArticleRepository.java  # implements domain ArticleRepository
     └── test/java/<pkg>/repositories/
 
-author-external-adapter/               # DRIVEN adapter template slot (external clients)
-├── build.gradle                       # REST/messaging client deps ONLY here
+kafka-adapter/                         # DRIVEN adapter (Kafka in/out; Principle VI)
+├── build.gradle                       # Spring for Apache Kafka ONLY here
 └── src/
-    ├── main/java/<pkg>/external/
-    │   └── AuthorExternalAPIAdapter.java  # implements AuthorOutputPort
-    └── test/java/<pkg>/external/
+    ├── main/
+    │   ├── java/<pkg>/kafka/
+    │   │   ├── publisher/             # implements ports.out.*Publisher
+    │   │   │   └── KafkaArticleEventPublisher.java
+    │   │   ├── consumer/              # implements ports.out.*Consumer
+    │   │   │   └── KafkaArticleCommandConsumer.java
+    │   │   └── KafkaMessageMapper.java  # core types <-> Kafka payloads
+    │   └── resources/asyncapi/
+    │       └── asyncapi.yaml          # AsyncAPI 3.x SOURCE OF TRUTH (topics, schemas)
+    └── test/java/<pkg>/kafka/         # Testcontainers Kafka + schema compatibility
+
+author-proxy-adapter/                  # DRIVEN adapter (calls an internal proxy; Principle VII)
+├── build.gradle                       # generated OpenAPI client ONLY; NO vendor SDKs
+└── src/
+    ├── main/java/<pkg>/proxy/author/
+    │   ├── AuthorProxyAdapter.java    # implements AuthorOutputPort
+    │   ├── AuthorProxyMapper.java     # proxy payloads <-> core types
+    │   └── AuthorProxyErrorMapper.java
+    └── test/java/<pkg>/proxy/author/  # stub-server tests against the proxy contract
+
+proxy-gateway/                         # SEPARATELY DEPLOYED simple proxy web services (Principle VII)
+└── author-proxy/                      # one deployable per external system
+    ├── build.gradle                   # Boot plugin; NO application-core dependency
+    └── src/
+        ├── main/java/<pkg>/proxy/author/
+        │   ├── AuthorProxyApplication.java  # Boot entry point for the proxy
+        │   ├── AuthorProxyController.java   # thin pass-through; generated interface
+        │   ├── AuthorVendorClient.java      # ONLY place vendor URL/creds are known
+        │   └── VendorAuthConfig.java
+        └── resources/openapi/author-proxy.openapi.yaml  # proxy contract (Principle V)
 
 spring-boot-assembly/                  # WIRING ONLY; the single Spring Boot application
 ├── build.gradle                       # depends on ALL modules; Boot plugin ONLY here
@@ -282,9 +406,9 @@ Module dependency rules (MUST hold; enforced by ArchUnit in
 - `spring-boot-assembly` MAY depend on all modules; NO other module MAY
   depend on `spring-boot-assembly`.
 - Driving/driven adapters (`api-adapter`, `postgres-adapter`,
-  `in-memory-repositories`, `author-external-adapter`) MAY depend on
-  `input-ports`/`output-ports`/`domain` and `shared-kernel`; they MUST NEVER
-  depend on each other.
+  `kafka-adapter`, `in-memory-repositories`, `author-proxy-adapter`) MAY
+  depend on `input-ports`/`output-ports`/`domain` and `shared-kernel`; they
+  MUST NEVER depend on each other.
 - `application` MAY depend on `domain`, `input-ports`, `output-ports`, and
   `shared-kernel`.
 - `input-ports` and `output-ports` MAY depend on `domain` and
@@ -293,9 +417,16 @@ Module dependency rules (MUST hold; enforced by ArchUnit in
 - `shared-kernel` MUST NOT depend on any sibling module.
 - Every module MUST mirror `src/main` with `src/test` using the same
   package split.
-- A new adapter (REST client, queue consumer, scheduler) MUST be a new
+- A new adapter (queue consumer, scheduler, proxy client) MUST be a new
   top-level module following the `*-adapter` shape above; adding I/O inside
   `application-core` is FORBIDDEN.
+- A new external system MUST add both a `<system>-proxy-adapter` module and
+  a `proxy-gateway/<system>-proxy` deployable, with the OpenAPI contract
+  owned by the proxy (Principle VII).
+- `proxy-gateway` modules MUST NOT depend on any application module, and
+  application modules MUST NOT depend on `proxy-gateway`.
+- A new asynchronous contract MUST be declared in the AsyncAPI document
+  with a versioned topic name (Principle VI).
 
 ## Governance
 
@@ -310,7 +441,7 @@ favor of the constitution.
   principles/sections or materially expanded guidance, PATCH for
   clarifications, wording, or typo fixes.
 - Compliance review is MANDATORY: all specs, plans, tasks, and pull requests
-  MUST verify adherence to Principles I-IV and record any boundary or DI
-  decisions.
+  MUST verify adherence to Principles I-VII and record any boundary, DI, or
+  contract decisions.
 
-**Version**: 1.1.0 | **Ratified**: 2026-09-23 | **Last Amended**: 2026-09-23
+**Version**: 1.2.0 | **Ratified**: 2026-09-23 | **Last Amended**: 2026-09-23
