@@ -1,26 +1,31 @@
 <!-- Sync Impact Report
-Version change: 1.2.0 -> 2.0.0 (MAJOR: Principle I scope redefined; new Principle VIII)
+Version change: 2.0.0 -> 2.1.0 (MINOR: four new principles + expanded guidance)
 Modified principles:
-- I. Architecture Layout & Packaging - scope narrowed to core-domain services
-- II. Dependency Isolation - core-only scope marker added
-- III. Ports & Inversion of Control - core-only scope marker added
+- VI. Kafka + AsyncAPI - transactional outbox elevated from SHOULD to MUST
 Added principles:
-- VIII. Architecture Scope: Hexagonal for Core Domains Only (NON-NEGOTIABLE)
+- IX. Service Boundaries & Ownership
+- X. Data Ownership & Cross-Service Consistency
+- XI. Production Readiness: Resilience & Observability
+- XII. Independent Deployability & Evolution
 Added guidance:
-- Appendix A marked CORE-domain only
-- Development Workflow gate (7): recorded core/non-core classification
-- Governance: reclassification is amendment-class; review covers I-VIII
-- Title renamed to reflect service-estate scope
-- Universality: IV, V, VI, VII, Technology Constraints, Workflow and
-  Governance apply to all services
+- Technology Constraints: Resilience4j, Spring Cloud Gateway, OpenTelemetry,
+  externalized configuration, private PostgreSQL schema per service
+- Development Workflow: gates (9) service component tests, (10) consumer-driven
+  contract tests, (11) resilience/observability/deployment requirements;
+  end-to-end tests restricted to critical journeys
+- Appendix A: cross-cutting wiring (outbox/saga state, observability, config)
+- Governance: review covers I-XII and data-ownership decisions
+Sources: Chris Richardson, "Microservices Patterns: With Examples in Java"
+  (1st ed., late 2018) and "Microservices Patterns, Second Edition"
+  (MEAP, 12 of 23 chapters available, announced June 2025) plus the
+  microservices.io pattern catalogue. 2nd-edition detail is partly unpublished,
+  so rules cite the catalogue and the 1st edition.
 Removed sections: none
 Follow-up TODOs: none
-Note: the prior Sync Impact Report had already been removed from this file, so
-this report covers this amendment only. It is temporary scratch material and
-MUST be removed before commit.
+NOTE: temporary scratch material for human review; MUST be removed before commit.
 -->
 
-# Spring Boot Services Constitution (Hexagonal Core, Conventional Non-Core)
+# Spring Boot MicroServices Constitution (Hexagonal Core, Conventional Non-Core)
 
 ## Core Principles
 
@@ -160,7 +165,8 @@ Rules:
 - Consumers MUST be idempotent and MUST process by message key; messages
   MUST carry an event or command id and an occurred-at timestamp.
 - Publication MUST NOT occur before the local transaction commits; where
-  emission must be atomic with a state change, an outbox SHOULD be used.
+  emission must be atomic with a state change, a transactional outbox MUST be
+  used (Principle X).
 
 Rationale: a documented, versioned asynchronous contract keeps publishers
 and consumers independently deployable and the core transport-agnostic.
@@ -223,6 +229,119 @@ product; imposing them on generic services adds ceremony and slows
 delivery, while the contract, wiring, and platform rules that protect
 operations stay universal.
 
+### IX. Service Boundaries & Ownership (NON-NEGOTIABLE)
+
+Services MUST be decomposed by business capability or by DDD subdomain. A
+service MUST NOT be defined by a technical layer, and each service MUST have
+exactly one owning team able to build, test, and deploy it independently.
+
+Rules:
+- Services MUST be self-contained: serving a synchronous request MUST NOT
+  require waiting synchronously on another service. Work that depends on a
+  remote system MUST be arranged asynchronously through the event/command path
+  (Principle VI).
+- Cross-service synchronous calls MUST be minimised; where unavoidable the
+  caller MUST apply Principle XI (timeout, bounded retry, circuit breaker).
+- Data owned by another service MUST NOT be reached directly; see Principle X.
+- New services MUST start from the service template: Appendix A for
+  core-domain services, the conventional Spring Boot layout for non-core
+  services, with all configuration externalized per environment.
+- A boundary MUST be introduced or changed only with the decision recorded in
+  the plan: the capability or subdomain, the owning team, and the data owned.
+
+Rationale: boundaries drawn on the business rather than on layers keep teams
+autonomous and coupling low; self-containment keeps user-facing latency
+independent of unrelated services.
+
+### X. Data Ownership & Cross-Service Consistency (NON-NEGOTIABLE)
+
+Each service MUST own its data privately - its own PostgreSQL schema, or a
+dedicated database instance where isolation demands it. Reading or writing
+another service's tables or schema is FORBIDDEN.
+
+Rules:
+- Data MUST be shared between services only through API contracts
+  (Principle V) or events and commands (Principle VI).
+- Distributed transactions and two-phase commit are FORBIDDEN. Consistency
+  spanning services MUST use a saga: a sequence of local transactions with
+  compensating actions. The coordination style (choreography or orchestration)
+  MUST be recorded in the plan.
+- A state change and the emission of its event or command MUST be atomic;
+  therefore the transactional outbox pattern MUST be used (Principle VI).
+- Consumers MUST be idempotent and MUST detect duplicates, because delivery is
+  at-least-once.
+- Cross-service queries MUST use API composition. CQRS with materialized views
+  or a command-side replica MAY be used only when composition is measurably
+  inadequate, with the justification recorded.
+- Schema changes MUST be backward compatible with the released contract
+  version (Principle XII).
+
+Rationale: private data removes the cheapest and most damaging form of
+coupling, while sagas plus an outbox give eventual consistency without
+distributed locking.
+
+### XI. Production Readiness: Resilience & Observability (NON-NEGOTIABLE)
+
+Every service MUST be production ready: it MUST degrade under failure rather
+than cascade, and its behaviour MUST be observable in production.
+
+Resilience rules:
+- Every remote call MUST set an explicit timeout; unbounded waits are
+  FORBIDDEN.
+- Retries MUST be bounded, MUST use backoff with jitter, and MUST apply only
+  to idempotent operations.
+- A circuit breaker MUST guard every synchronous dependency on another service
+  or on a proxy web service (Principle VII).
+- Bulkheads MUST isolate scarce resources such as thread pools and database
+  connections, so one slow dependency cannot exhaust the service.
+- Rate limiting MUST protect public and unauthenticated endpoints, including
+  the business registration intake.
+- Failed or unprocessable messages MUST be routed to a dead-letter channel with
+  alerting; infinite retry loops are FORBIDDEN.
+
+Observability rules:
+- A correlation/trace identifier MUST be created at the entry point and
+  propagated across every REST call and Kafka message, and MUST appear in
+  structured logs for all hops.
+- Every service MUST expose health and readiness endpoints covering its
+  dependencies (database, broker, proxy services).
+- Metrics MUST cover at least latency, error rate and throughput plus the
+  domain signals of the service (for example applications submitted and
+  verification outcomes).
+- Every state-changing operation MUST be audit logged with actor, timestamp,
+  identifiers and outcome; log aggregation, distributed tracing, exception
+  tracking, and a record of deployments and configuration changes MUST be in
+  place before production release.
+
+Rationale: fast flow depends on observability and on failures staying local;
+without these, team autonomy becomes unmanageable production risk.
+
+### XII. Independent Deployability & Evolution (NON-NEGOTIABLE)
+
+A service MUST be deployable and rollback-able on its own, without changing or
+coordinating with other services.
+
+Rules:
+- Each service MUST build one immutable artefact, produced once and promoted
+  unchanged through environments, with one service instance per container.
+- There MUST be no shared deployable unit and no release train that requires
+  several services to ship together.
+- API and event contracts MUST evolve additively within a version; breaking
+  changes MUST create a new version (Principle V for HTTP, Principle VI for
+  topics) and MUST keep the previous version supported until consumers have
+  migrated.
+- Database schema changes MUST stay backward compatible with the currently
+  deployed service version (expand, migrate, then contract).
+- External clients MUST reach services through an API gateway, and a dedicated
+  backend-for-frontend MUST be used where client needs diverge materially
+  instead of overloading one API. This becomes mandatory as soon as more than
+  one service is externally exposed.
+- CI MUST enforce the deployment-pipeline gates in Development Workflow before
+  an artefact can be promoted.
+
+Rationale: independent deployability is the property that justifies the
+architecture's cost, and contract plus schema discipline is what preserves it.
+
 ## Technology Constraints & Build Standards
 
 The stack is Java 25 with Spring Boot 4 for adapters and configuration
@@ -239,6 +358,13 @@ verified in CI. The pinned integration stack is:
   the only asynchronous transport, documented with AsyncAPI 3.x.
 - **External systems**: internal simple proxy web services (Principle VII)
   consumed through generated OpenAPI clients.
+- **Resilience**: Resilience4j for timeouts, bounded retries, circuit breakers
+  and bulkheads (Principle XI).
+- **Edge**: Spring Cloud Gateway as the API gateway (Principle XII).
+- **Observability**: OpenTelemetry for distributed tracing, alongside
+  structured logs and metrics (Principle XI).
+- **Configuration**: externalized per environment; environment-specific values
+  MUST NOT be baked into build artefacts.
 
 Rules:
 - Persistence, web (Spring MVC), and messaging clients MUST reside ONLY in
@@ -249,6 +375,9 @@ Rules:
   carrying framework annotations are FORBIDDEN.
 - Contract documents (`openapi/`, `asyncapi/`) MUST be committed with the
   owning adapter module and validated in CI.
+- Each service MUST own a private PostgreSQL schema, or a dedicated database
+  instance where isolation demands it; cross-schema access is FORBIDDEN
+  (Principle X).
 
 ## Development Workflow & Quality Gates
 
@@ -265,8 +394,14 @@ service (Principle VIII) before merge:
 - All services MUST satisfy: (5) constructor injection only, (6) OpenAPI and
   AsyncAPI contract validation with no implementation drift, (7) Kafka schema
   compatibility check for any broker change, (8) the service's core/non-core
-  classification recorded (Principle VIII).
-- Violations of Principles I-VIII MUST block merge; justified exceptions
+  classification recorded (Principle VIII), (9) service component tests that
+  exercise the service in isolation using doubles for invoked services,
+  (10) consumer-driven contract tests for every HTTP and Kafka consumer, run in
+  CI, (11) the resilience, observability and deployment-pipeline requirements
+  of Principles XI and XII.
+- End-to-end tests MUST be limited to a small set of critical user journeys and
+  MUST NOT be the primary verification mechanism.
+- Violations of Principles I-XII MUST block merge; justified exceptions
   require a constitution amendment, not an ad-hoc waiver.
 
 ## Appendix A: Normative Directory Structure Template
@@ -475,6 +610,15 @@ Module dependency rules (MUST hold; enforced by ArchUnit in
 - A new asynchronous contract MUST be declared in the AsyncAPI document
   with a versioned topic name (Principle VI).
 
+Cross-cutting wiring for core-domain services:
+
+- Transactional outbox and saga state MUST be persisted through
+  `postgres-adapter` in the service's own private schema (Principle X).
+- Health and readiness endpoints, metrics, tracing, correlation-id propagation
+  and rate limiting MUST be wired in `spring-boot-assembly` configuration
+  (Principle XI).
+- Configuration MUST be externalized per environment (Principles IX and XII).
+
 ## Governance
 
 This constitution supersedes all other coding practices for this project.
@@ -488,9 +632,9 @@ favor of the constitution.
   principles/sections or materially expanded guidance, PATCH for
   clarifications, wording, or typo fixes.
 - Compliance review is MANDATORY: all specs, plans, tasks, and pull requests
-  MUST verify adherence to Principles I-VIII and record any boundary, DI,
-  contract, or scope-classification decisions.
+  MUST verify adherence to Principles I-XII and record any boundary, DI,
+  contract, data-ownership, or scope-classification decisions.
 - Reclassifying a service between core and non-core is an amendment-class
   change and MUST follow the amendment procedure above.
 
-**Version**: 2.0.0 | **Ratified**: 2026-09-23 | **Last Amended**: 2026-09-23
+**Version**: 2.1.0 | **Ratified**: 2026-09-23 | **Last Amended**: 2026-09-23
