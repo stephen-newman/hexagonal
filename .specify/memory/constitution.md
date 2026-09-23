@@ -1,30 +1,40 @@
 <!-- Sync Impact Report
-Version change: 1.1.0 -> 1.2.0 (MINOR: three new principles + expanded guidance)
-Modified principles: none (I-IV unchanged)
+Version change: 1.2.0 -> 2.0.0 (MAJOR: Principle I scope redefined; new Principle VIII)
+Modified principles:
+- I. Architecture Layout & Packaging - scope narrowed to core-domain services
+- II. Dependency Isolation - core-only scope marker added
+- III. Ports & Inversion of Control - core-only scope marker added
 Added principles:
-- V. Contract-First REST Driving Ports (OpenAPI)
-- VI. Kafka + AsyncAPI for Domain Events & Commands (driven ports)
-- VII. External Web Services via Simple Proxy Web Services
-       (proxies are separately deployed internal services; accepted option 1)
-Added guidance: Technology Constraints integration stack; Appendix A
-  openapi/asyncapi artifacts, kafka-adapter, author-proxy-adapter,
-  proxy-gateway modules and dependency rules; PR contract gates
+- VIII. Architecture Scope: Hexagonal for Core Domains Only (NON-NEGOTIABLE)
+Added guidance:
+- Appendix A marked CORE-domain only
+- Development Workflow gate (7): recorded core/non-core classification
+- Governance: reclassification is amendment-class; review covers I-VIII
+- Title renamed to reflect service-estate scope
+- Universality: IV, V, VI, VII, Technology Constraints, Workflow and
+  Governance apply to all services
 Removed sections: none
 Follow-up TODOs: none
-NOTE: This HTML comment is temporary scratch material for human review and MUST be removed before commit.
+Note: the prior Sync Impact Report had already been removed from this file, so
+this report covers this amendment only. It is temporary scratch material and
+MUST be removed before commit.
 -->
 
-# Spring Boot Hexagonal Application Constitution
+# Spring Boot Services Constitution (Hexagonal Core, Conventional Non-Core)
 
 ## Core Principles
 
 ### I. Architecture Layout & Packaging (NON-NEGOTIABLE)
 
-Every feature MUST be organized into three distinct layers with clear
-structural separation: `domain` (core business logic: entities, value
-objects, domain services, business rules), `ports` (interfaces: inbound
-use-case ports and outbound driven ports), and `adapters` (infrastructure,
-web, and database implementations plus configuration).
+In every core-domain service, each feature MUST be organized into three
+distinct layers with clear structural separation: `domain` (core business
+logic: entities, value objects, domain services, business rules), `ports`
+(interfaces: inbound use-case ports and outbound driven ports), and
+`adapters` (infrastructure, web, and database implementations plus
+configuration).
+
+Scope: this principle applies to CORE-domain services only; service
+classification is defined in Principle VIII.
 
 Rules:
 - `domain` MUST NOT reference `adapters` packages or types; `ports` MUST
@@ -41,6 +51,9 @@ tooling and review, keeping business logic independent of delivery and
 persistence mechanisms.
 
 ### II. Dependency Isolation - Framework-Free Core (NON-NEGOTIABLE)
+
+Core-domain services only; service classification is defined in Principle
+VIII.
 
 The `domain` and `ports` layers MUST be pure Java. They MUST NEVER import
 Spring Framework (`org.springframework.*`), JPA / Jakarta Persistence
@@ -66,6 +79,9 @@ testing, and that framework upgrades never force business-logic rewrites.
 All cross-boundary communication MUST go through ports defined inside the
 core and follow dependency inversion: the core owns the interface, adapters
 provide the implementation.
+
+Scope: this principle applies to CORE-domain services only (see Principle
+VIII).
 
 Rules:
 - Primary/Driving ports (use cases invoked by controllers, CLI, schedulers)
@@ -173,6 +189,40 @@ Rules:
 Rationale: proxies absorb vendor churn and secrets, keeping core contracts
 stable and driven adapters stubbable in tests.
 
+### VIII. Architecture Scope: Hexagonal for Core Domains Only (NON-NEGOTIABLE)
+
+Every service MUST be classified as either a CORE-domain service or a
+NON-CORE-domain service, and that classification decides whether the
+hexagonal rules apply.
+
+Rules:
+- Core-domain services MUST follow Principles I, II, and III and MUST use
+  the Appendix A module layout.
+- Non-core-domain services MUST NOT adopt hexagonal layering: no
+  `domain` / `ports` / `adapters` split, no core-owned port interfaces, no
+  hexagonal ArchUnit gates, and no copy of the Appendix A layout. They MUST
+  use a conventional Spring Boot structure (layered or package-by-feature)
+  and MUST NOT be described as hexagonal.
+- Classification criteria: a domain is CORE when it holds differentiating
+  business rules and a long-lived domain model; it is NON-CORE when it is
+  supporting or generic (admin CRUD, reporting, notifications, integration
+  plumbing).
+- Unresolved classification MUST default to CORE.
+- Each service MUST record its classification in its own architecture
+  documentation and state it in the Constitution Check of its plan.
+- Reclassifying a domain REQUIRES a constitution amendment, because it
+  changes which principles apply.
+- Everything else is universal: Principle IV (constructor injection),
+  Principle V (OpenAPI contracts), Principle VI (Kafka + AsyncAPI),
+  Principle VII (proxy web services), the Technology Constraints, the
+  Development Workflow, and Governance apply to ALL services, core and
+  non-core alike.
+
+Rationale: ports and adapters earn their keep where business rules are the
+product; imposing them on generic services adds ceremony and slows
+delivery, while the contract, wiring, and platform rules that protect
+operations stay universal.
+
 ## Technology Constraints & Build Standards
 
 The stack is Java 25 with Spring Boot 4 for adapters and configuration
@@ -202,25 +252,31 @@ Rules:
 
 ## Development Workflow & Quality Gates
 
-Every change MUST verify hexagonal compliance before merge:
+Every change MUST verify compliance with the principles that apply to the
+service (Principle VIII) before merge:
 
-- New business logic MUST be added to `domain` with core-owned ports; new
-  I/O MUST be added as an adapter behind a driven port interface.
-- Pull requests MUST include: (1) ArchUnit/boundary tests green,
+- In core-domain services, new business logic MUST be added to `domain` with
+  core-owned ports; new I/O MUST be added as an adapter behind a driven port
+  interface.
+- Core-domain services MUST also satisfy: (1) ArchUnit/boundary tests green,
   (2) plain-JUnit core tests without Spring context, (3) adapter tests for
   each new implementation, (4) a reviewer checklist confirming no Spring/JPA
-  imports in `domain`/`ports` and constructor injection only,
-  (5) OpenAPI/AsyncAPI contract validation with no implementation drift,
-  (6) Kafka schema compatibility check for any broker change.
-- Violations of Principles I-VII MUST block merge; justified exceptions
+  imports in `domain`/`ports`.
+- All services MUST satisfy: (5) constructor injection only, (6) OpenAPI and
+  AsyncAPI contract validation with no implementation drift, (7) Kafka schema
+  compatibility check for any broker change, (8) the service's core/non-core
+  classification recorded (Principle VIII).
+- Violations of Principles I-VIII MUST block merge; justified exceptions
   require a constitution amendment, not an ad-hoc waiver.
 
 ## Appendix A: Normative Directory Structure Template
 
 ### Core Modules (shared-kernel, application-core)
 
-This appendix is NORMATIVE. New projects and features MUST follow this
-Gradle (Groovy DSL) multi-module layout, adapted from the reference
+This appendix is NORMATIVE and applies to CORE-domain services only;
+non-core-domain services MUST NOT copy this layout (Principle VIII). New
+projects and features MUST follow this Gradle (Groovy DSL) multi-module
+layout, adapted from the reference
 architecture https://github.com/emedina/hexagonal-spring-ref-app.git
 (Java 25, Spring Boot 4.0.1; reference uses Maven — mapped here to Gradle
 Groovy per constitution stack pin, with a `postgres-adapter` added as the
@@ -355,15 +411,6 @@ kafka-adapter/                         # DRIVEN adapter (Kafka in/out; Principle
     │       └── asyncapi.yaml          # AsyncAPI 3.x SOURCE OF TRUTH (topics, schemas)
     └── test/java/<pkg>/kafka/         # Testcontainers Kafka + schema compatibility
 
-author-proxy-adapter/                  # DRIVEN adapter (calls an internal proxy; Principle VII)
-├── build.gradle                       # generated OpenAPI client ONLY; NO vendor SDKs
-└── src/
-    ├── main/java/<pkg>/proxy/author/
-    │   ├── AuthorProxyAdapter.java    # implements AuthorOutputPort
-    │   ├── AuthorProxyMapper.java     # proxy payloads <-> core types
-    │   └── AuthorProxyErrorMapper.java
-    └── test/java/<pkg>/proxy/author/  # stub-server tests against the proxy contract
-
 proxy-gateway/                         # SEPARATELY DEPLOYED simple proxy web services (Principle VII)
 └── author-proxy/                      # one deployable per external system
     ├── build.gradle                   # Boot plugin; NO application-core dependency
@@ -441,7 +488,9 @@ favor of the constitution.
   principles/sections or materially expanded guidance, PATCH for
   clarifications, wording, or typo fixes.
 - Compliance review is MANDATORY: all specs, plans, tasks, and pull requests
-  MUST verify adherence to Principles I-VII and record any boundary, DI, or
-  contract decisions.
+  MUST verify adherence to Principles I-VIII and record any boundary, DI,
+  contract, or scope-classification decisions.
+- Reclassifying a service between core and non-core is an amendment-class
+  change and MUST follow the amendment procedure above.
 
-**Version**: 1.2.0 | **Ratified**: 2026-09-23 | **Last Amended**: 2026-09-23
+**Version**: 2.0.0 | **Ratified**: 2026-09-23 | **Last Amended**: 2026-09-23
