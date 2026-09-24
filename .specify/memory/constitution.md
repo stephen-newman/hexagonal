@@ -1,27 +1,47 @@
 <!-- Sync Impact Report
-Version change: 2.0.0 -> 2.1.0 (MINOR: four new principles + expanded guidance)
-Modified principles:
-- VI. Kafka + AsyncAPI - transactional outbox elevated from SHOULD to MUST
+Version change: 2.1.0 -> 2.2.0 (MINOR: five new security principles + expanded guidance)
+Modified principles (rules added, no rule removed or redefined):
+- V. Contract-First REST Driving Ports (OpenAPI) - contract strictness and
+  response-exposure limits now cite Principle XV
+- VII. External Web Services via Simple Proxy Web Services - egress allowlist
+  (SSRF), untrusted vendor payloads, proxy credential handling
+- X. Data Ownership & Cross-Service Consistency - sensitive data MUST NOT be
+  copied into events or commands
+- XI. Production Readiness: Resilience & Observability - log hygiene, redaction,
+  audit-stream separation, per-business-key velocity limits, abuse alerting,
+  capacity headroom and load-amplification tests
+- XII. Independent Deployability & Evolution - gateway edge duties separated
+  from in-service authorization
 Added principles:
-- IX. Service Boundaries & Ownership
-- X. Data Ownership & Cross-Service Consistency
-- XI. Production Readiness: Resilience & Observability
-- XII. Independent Deployability & Evolution
+- XIII. Sensitive Data Protection
+- XIV. Untrusted Input & Valid-by-Construction Domain Model
+- XV. Secure HTTP Contracts & Response Minimisation
+- XVI. Identity-Ready, Default-Deny Authorization
+- XVII. Secrets, Keys & Secure Baseline Configuration
 Added guidance:
-- Technology Constraints: Resilience4j, Spring Cloud Gateway, OpenTelemetry,
-  externalized configuration, private PostgreSQL schema per service
-- Development Workflow: gates (9) service component tests, (10) consumer-driven
-  contract tests, (11) resilience/observability/deployment requirements;
-  end-to-end tests restricted to critical journeys
-- Appendix A: cross-cutting wiring (outbox/saga state, observability, config)
-- Governance: review covers I-XII and data-ownership decisions
-Sources: Chris Richardson, "Microservices Patterns: With Examples in Java"
-  (1st ed., late 2018) and "Microservices Patterns, Second Edition"
-  (MEAP, 12 of 23 chapters available, announced June 2025) plus the
-  microservices.io pattern catalogue. 2nd-edition detail is partly unpublished,
-  so rules cite the catalogue and the 1st edition.
+- Technology Constraints: security tooling slots (contract lint with an OWASP
+  rule set, contract fuzzing, secret and dependency scanning, encryption with
+  versioned keys, future authentication stack) marked (decision needed); no
+  library is pinned until the decision is recorded
+- Development Workflow: gates (12) threat model is a plan artifact,
+  (13) threat-to-test traceability, (14) security-aware contract lint and
+  contract fuzzing, (15) negative-input suite returning documented 4xx only,
+  (16) access-control regression and redaction tests, (17) secret and
+  dependency scans, (18) the security stage blocks merge
+- Governance: compliance review covers I-XVII; downgrading a sensitivity
+  classification is recorded and reviewed in the plan
+Sources: Daniel Deogun, Dan Bergh Johnsson, Daniel Sawano, "Secure by Design"
+  (Manning, 1st ed., 2019) and Jose Haro Peralta, "Secure APIs: Design, Build,
+  and Implement" (Manning, 1st ed., 2025). Rules are paraphrased from those
+  sources; no book text is quoted.
 Removed sections: none
-Follow-up TODOs: none
+Follow-up TODOs:
+- TODO(SECURITY_TOOLING): pin the contract-linting, fuzzing, secret-scanning,
+  dependency-scanning, and encryption libraries in Technology Constraints.
+- TODO(SPEC_001): refresh specs/001-register-corporate-behalf/spec.md for
+  Principles XIII-XVII (non-enumerable application ID, anonymous-actor fields,
+  validation order and size limits, audit-trail vs hard-delete tension, and the
+  manual queue as an audited operation).
 NOTE: temporary scratch material for human review; MUST be removed before commit.
 -->
 
@@ -143,6 +163,9 @@ Rules:
   bump the contract version and the affected path.
 - CI MUST validate every contract and MUST fail on drift between the
   contract and the implementation.
+- Contract strictness and output exposure are governed by Principle XV:
+  request schemas MUST be strict with bounded fields, and responses MUST be
+  serialised from an allowlisted response DTO.
 
 Rationale: the contract is the published interface, so making it the source
 of truth keeps consumers stable and the core HTTP-agnostic.
@@ -191,6 +214,13 @@ Rules:
   with a generated OpenAPI client, mapping proxy failures to core errors.
 - Application modules MUST NOT depend on proxy modules at build time, and
   proxies MUST NOT depend on `domain`, `ports`, or `application-core`.
+- Outbound destinations MUST come from a static allowlist of hosts and
+  schemes; fetching a user-supplied or caller-supplied URL is FORBIDDEN (SSRF).
+- Vendor responses MUST be treated as untrusted: they MUST be validated
+  against the proxy contract before use or persistence, and a malformed or
+  unavailable vendor payload MUST map to a core error with no partial write.
+- Proxy credentials and vendor secrets MUST be injected from secret storage and
+  MUST have a documented rotation procedure (Principle XVII).
 
 Rationale: proxies absorb vendor churn and secrets, keeping core contracts
 stable and driven adapters stubbable in tests.
@@ -275,6 +305,9 @@ Rules:
   inadequate, with the justification recorded.
 - Schema changes MUST be backward compatible with the released contract
   version (Principle XII).
+- SENSITIVE data (Principle XIII) MUST NOT be copied into events, commands, or
+  inter-service payloads; those MUST carry identifiers, and every fact MUST
+  have exactly one authoritative owning service.
 
 Rationale: private data removes the cheapest and most damaging form of
 coupling, while sagas plus an outbox give eventual consistency without
@@ -298,6 +331,13 @@ Resilience rules:
   the business registration intake.
 - Failed or unprocessable messages MUST be routed to a dead-letter channel with
   alerting; infinite retry loops are FORBIDDEN.
+- Abuse controls on public and unauthenticated endpoints MUST apply velocity
+  limits per caller AND per business key (for example a business identifier
+  supplied by the caller), MUST return 429 with `Retry-After`, and MUST raise
+  an alert when a limiter trips.
+- Capacity MUST be verified by tests, not assumed: the service MUST assert its
+  headroom and MUST test legitimate domain rules that an attacker could exploit
+  for load amplification (repeated replacement, retry, or resubmission paths).
 
 Observability rules:
 - A correlation/trace identifier MUST be created at the entry point and
@@ -312,6 +352,18 @@ Observability rules:
   identifiers and outcome; log aggregation, distributed tracing, exception
   tracking, and a record of deployments and configuration changes MUST be in
   place before production release.
+- Logging MUST go through a core-owned domain-oriented logger port: logging
+  domain objects through `toString()` or reflection is FORBIDDEN, and unchecked
+  input values MUST NOT be logged.
+- Log records MUST be structured JSON shipped to a central logging service; a
+  local file appender as the system of record is FORBIDDEN.
+- Records MUST be categorised as audit, behaviour, or error, and the categories
+  MUST NOT be intermixed in one stream: audit records MUST be append-only,
+  write-restricted and retained, and MUST carry service name, version, instance
+  id, and the correlation identifier.
+- Every service MUST maintain an explicit redaction list covering credentials,
+  tokens, sensitive fields, and full request payloads, and MUST prove redaction
+  in tests (Principle XIII).
 
 Rationale: fast flow depends on observability and on failures staying local;
 without these, team autonomy becomes unmanageable production risk.
@@ -336,11 +388,172 @@ Rules:
   backend-for-frontend MUST be used where client needs diverge materially
   instead of overloading one API. This becomes mandatory as soon as more than
   one service is externally exposed.
+- The gateway MUST own edge concerns only - route inventory, request and
+  response schema validation, secure headers, and rate limiting - while
+  business authorization stays inside the services (Principle XVI).
 - CI MUST enforce the deployment-pipeline gates in Development Workflow before
   an artefact can be promoted.
 
 Rationale: independent deployability is the property that justifies the
 architecture's cost, and contract plus schema discipline is what preserves it.
+
+### XIII. Sensitive Data Protection (NON-NEGOTIABLE)
+
+Every persisted, logged, or published field MUST carry an explicit sensitivity
+classification, and data classified SENSITIVE MUST be protected wherever it
+travels.
+
+Rules:
+- Every field MUST be classified PUBLIC, INTERNAL, CONFIDENTIAL, or SENSITIVE
+  in the plan. Fields that are individually harmless but jointly identify or
+  locate a person MUST be classified SENSITIVE as a combination.
+- SENSITIVE values MUST NEVER appear in logs, traces, metric labels, error
+  responses, dead-letter messages, or events. They MUST travel in a read-once
+  domain primitive that permits a single release at the one place that needs
+  it: the encryption adapter, or the masked projection returned to a caller.
+- SENSITIVE data MUST be encrypted at rest, and the key version used MUST be
+  stored with the ciphertext so keys can be rotated without rewriting history.
+- Responses MUST expose the minimum projection the consumer needs; a government
+  identity number or equivalent identifier MUST be returned masked only, never
+  in full.
+- Every SENSITIVE field MUST have a retention and deletion rule recorded in the
+  plan, and replacement or deletion semantics MUST NOT silently destroy audit
+  evidence (Principle XI).
+
+Rationale: classification is the decision that determines what can leak, so it
+is made at design time and enforced where the value is created, stored, and
+emitted - not audited after the fact.
+
+### XIV. Untrusted Input & Valid-by-Construction Domain Model (NON-NEGOTIABLE)
+
+All data crossing a trust boundary MUST be treated as untrusted until validated,
+and the domain model MUST make invalid state unrepresentable.
+
+Rules:
+- In `domain`, a concept MUST NOT be represented by a language primitive or
+  generic type (`String`, `int`, `long`, `boolean`, `UUID`, `List<String>`) in
+  constructors, entity fields, or port signatures. Each concept MUST be a
+  dedicated domain primitive - an immutable `record` or `final` class - that is
+  valid by construction: invariants are checked at creation and invalid input is
+  rejected, so an existing instance is always valid.
+- Validation MUST run at the boundary in this order: origin (expected source and
+  path), size (declared maxima enforced before parsing, allocation, or regex
+  matching), lexical content (allowed characters and encoding), syntax (format),
+  then semantics (meaningful and permitted in this context). Input MUST be
+  validated before any normalisation; silently repairing input so it satisfies a
+  contract is FORBIDDEN.
+- Entities and handlers MUST NOT re-validate what a domain primitive already
+  guarantees; they MUST trust domain primitives and add only semantic rules
+  about their own state.
+- Domain types MUST be immutable: fields `final`, public setters FORBIDDEN,
+  mutable objects MUST NOT be handed out, and collections MUST be exposed
+  unmodifiable with immutable elements.
+- Domain entities MUST be consistent on creation: no public no-arg constructor,
+  all mandatory fields supplied at construction, and conditional or advanced
+  constraints upheld by construction.
+- State changes MUST go through explicit named transition operations, or an
+  explicit state object, that re-establish the invariants; an unpermitted
+  transition MUST be rejected rather than merely documented.
+- Every domain rule MUST have normal, boundary, and invalid-input tests; an
+  invariant without a failing-case test is not verified.
+- Domain primitives MUST NOT be published across a boundary (Principle I): HTTP,
+  Kafka, and proxy contracts carry DTOs mapped at the adapter edge.
+
+Rationale: validating once, in one place, at the boundary removes defensive
+re-checks from the whole codebase and leaves every reachable state a legal one.
+
+### XV. Secure HTTP Contracts & Response Minimisation
+
+HTTP contracts MUST be strict about input and minimal about output.
+
+Rules:
+- Every request schema MUST set `additionalProperties: false` and MUST mark all
+  mandatory fields as `required`; every request field MUST be bounded with
+  `maxLength`, `maximum`/`minimum`, `maxItems`, `enum`, or `pattern`. Unbounded
+  strings, numbers, or lists MUST NOT appear in any contract.
+- Request and response bodies MUST use separate schemas. Server-managed
+  properties - identifier, status, verification outcome, timestamps, audit
+  fields - MUST NOT appear in any request schema and MUST be rejected when
+  supplied; this is the mass-assignment guard.
+- Responses MUST be serialised from an explicit response DTO that is the field
+  allowlist; serialising JPA entities, domain objects, `Map`/`Object`, or vendor
+  payloads is FORBIDDEN.
+- Externally visible identifiers MUST be non-enumerable, server-generated
+  values with at least 122 bits of randomness (UUIDv4 or equivalent). Sequential
+  and auto-increment keys MUST NOT be exposed, and client-supplied identifiers
+  MUST be rejected on create.
+- Every operation MUST declare its security requirement explicitly. An operation
+  that is deliberately public MUST declare an empty requirement and MUST be
+  justified in the plan, and the reserved future authentication scheme MUST be
+  declared in the contract from the start so that adding authentication is
+  additive rather than a rewrite.
+- Errors MUST use one shared, documented error schema: no stack traces, no SQL,
+  no internal identifiers, and the offending submitted value MUST NOT be echoed
+  back to the caller.
+- Every exposed endpoint MUST be registered against a versioned contract in the
+  API inventory; an undocumented or shadow route MUST be treated as an incident.
+
+Rationale: a strict contract is the only point that can reject unknown input and
+refuse to over-share output before any domain code runs, so exposure becomes a
+contract property rather than a code-review judgement.
+
+### XVI. Identity-Ready, Default-Deny Authorization (NON-NEGOTIABLE)
+
+Every operation is denied unless the plan states who may call it, and services
+MUST be able to adopt authentication without redesign.
+
+Rules:
+- Caller identity MUST enter the core through a core-owned port (for example
+  `CallerIdentity` / `ActorContext`) even while a service has no authentication:
+  an explicit anonymous actor MUST be resolved and recorded rather than omitted,
+  and persisted records MUST carry the actor reference.
+- Every operation MUST appear in an access-control matrix in the plan naming the
+  permitted actor class, including the degenerate no-authentication case. An
+  operation with no matrix row MUST fail review.
+- Authorization MUST be enforced inside the core or its ports for every
+  operation; the gateway MUST NOT be the only enforcement point. Internal
+  service-to-service endpoints MUST receive the same validation as public ones;
+  no endpoint is exempt because of network location.
+- Token and credential handling MUST NOT be hand-rolled: permitted algorithms,
+  issuer, audience, and expiry MUST be pinned, signing keys MUST come from the
+  trusted discovery or JWKS endpoint with a bounded cache that refetches on an
+  unknown key id, and key rotation MUST NOT require a release.
+- Destructive, irreversible, or state-overwriting flows MUST NOT be reachable
+  without authentication; where a v1 scope requires one to be, it MUST be
+  velocity-limited (Principle XI), tested as an abuse scenario, and alertable.
+- Administrative, manual, and back-office actions MUST be first-class,
+  authenticated, audit-logged operations of the service; using standing direct
+  database access to change state is FORBIDDEN.
+
+Rationale: retrofitting identity is most expensive exactly where it matters
+most, so identity is threaded through the design from v1 even when it is
+anonymous.
+
+### XVII. Secrets, Keys & Secure Baseline Configuration
+
+Secrets MUST live outside the artefact, configuration MUST be validated before
+use, and the secure default MUST be the only default.
+
+Rules:
+- Secrets, credentials, and encryption keys MUST NEVER appear in code, committed
+  configuration, contracts, images, or logs; they MUST be injected from the
+  environment or from a secret store.
+- CI MUST run a secret scan and a dependency vulnerability scan. A committed
+  secret MUST be treated as an incident that requires rotation, not merely
+  removal.
+- Configuration MUST be validated at startup; every default MUST be known and
+  asserted by a test; invalid configuration MUST prevent startup rather than
+  fail open at first use.
+- Every secret and key MUST have a documented rotation procedure, and rotation
+  MUST NOT require a coordinated release across services.
+- Only the required HTTP methods MUST be enabled; management, actuator, and
+  debug endpoints MUST NOT be publicly reachable; error responses MUST be
+  generic; and security headers MUST be set at the edge.
+- Feature toggles MUST be owned, time-boxed, and audited, and MUST NOT
+  substitute for a release strategy.
+
+Rationale: configuration and secrets are the shortest path from a small mistake
+to a breach, so they are externalized, validated, rotatable, and default-deny.
 
 ## Technology Constraints & Build Standards
 
@@ -365,6 +578,14 @@ verified in CI. The pinned integration stack is:
   structured logs and metrics (Principle XI).
 - **Configuration**: externalized per environment; environment-specific values
   MUST NOT be baked into build artefacts.
+- **Security tooling** (decision needed): contract linting with an OWASP API
+  rule set, contract fuzzing, secret scanning, and dependency vulnerability
+  scanning MUST run in the pipeline; the specific tools MUST be pinned in the
+  build files before the first security gate is required.
+- **Cryptography and identity** (decision needed): encryption of SENSITIVE
+  data MUST use a managed key store with versioned keys (Principle XIII), and
+  the future authentication stack MUST be an OIDC provider with JWT
+  verification (Principle XVI); libraries MUST be pinned once chosen.
 
 Rules:
 - Persistence, web (Spring MVC), and messaging clients MUST reside ONLY in
@@ -378,6 +599,10 @@ Rules:
 - Each service MUST own a private PostgreSQL schema, or a dedicated database
   instance where isolation demands it; cross-schema access is FORBIDDEN
   (Principle X).
+- SENSITIVE fields MUST be encrypted and decrypted by an adapter that owns the
+  cipher and its keys; core MUST handle them only as domain primitives, and
+  unmasked values MUST NOT be returned across a port boundary
+  (Principles XIII and XIV).
 
 ## Development Workflow & Quality Gates
 
@@ -399,9 +624,20 @@ service (Principle VIII) before merge:
   (10) consumer-driven contract tests for every HTTP and Kafka consumer, run in
   CI, (11) the resilience, observability and deployment-pipeline requirements
   of Principles XI and XII.
+- Security gates apply to every service: (12) a threat model recorded in the
+  plan before tasks are generated, covering decomposed flows, ranked threats,
+  and their mitigations; (13) every threat-model scenario traced to at least one
+  automated test before release; (14) security-aware contract linting (strict
+  schemas, bounded fields, declared security requirements) plus contract
+  fuzzing in CI; (15) a negative-input suite proving that unknown properties,
+  oversize bodies, malformed payloads, and control characters return documented
+  4xx responses and never 5xx; (16) access-control regression tests over the
+  matrix of Principle XVI, plus a redaction test proving that no SENSITIVE value
+  reaches logs, traces, or error bodies; (17) secret and dependency
+  vulnerability scans; (18) a security stage that blocks merge while red.
 - End-to-end tests MUST be limited to a small set of critical user journeys and
   MUST NOT be the primary verification mechanism.
-- Violations of Principles I-XII MUST block merge; justified exceptions
+- Violations of Principles I-XVII MUST block merge; justified exceptions
   require a constitution amendment, not an ad-hoc waiver.
 
 ## Appendix A: Normative Directory Structure Template
@@ -444,7 +680,7 @@ application-core/                      # aggregator only (no sources at this lev
 │   ├── build.gradle                   # pure Java ONLY; NO Spring/JPA deps
 │   └── src/
 │       ├── main/java/<pkg>/domain/
-│       │   ├── entities/              # aggregates, entities, value objects
+│       │   ├── entities/              # aggregates, entities, domain primitives (Principle XIV)
 │       │   │   ├── Article.java
 │       │   │   ├── ArticleId.java
 │       │   │   ├── Author.java
@@ -488,7 +724,10 @@ application-core/                      # aggregator only (no sources at this lev
     ├── build.gradle                   # depends on domain + shared-kernel ONLY
     └── src/
         ├── main/java/<pkg>/application/ports/out/
-        │   └── AuthorOutputPort.java   # driven-port interfaces for external systems
+        │   ├── AuthorOutputPort.java   # driven-port interfaces for external systems
+        │   ├── DomainLogger.java       # core-owned logging port (Principle XI)
+        │   ├── CipherPort.java         # encrypt / mask SENSITIVE values (Principle XIII)
+        │   └── CallerIdentityPort.java # anonymous actor now, authenticated later (Principle XVI)
         └── test/                      # port contract tests if applicable
 ```
 
@@ -509,7 +748,7 @@ api-adapter/                           # DRIVING adapter (REST in)
     │   │   ├── ApiErrorHandler.java
     │   │   ├── ApiGlobalExceptionHandler.java
     │   │   └── ApiResultUtils.java    # Either<Error, T> -> ResponseEntity mapping
-    │   └── resources/openapi/
+    │   └── resources/openapi/           # strict schemas, declared security (Principle XV)
     │       └── business-registration.openapi.yaml  # OpenAPI 3.1 SOURCE OF TRUTH
     └── test/java/<pkg>/api/
         ├── ArticleControllerTest.java
@@ -617,6 +856,10 @@ Cross-cutting wiring for core-domain services:
 - Health and readiness endpoints, metrics, tracing, correlation-id propagation
   and rate limiting MUST be wired in `spring-boot-assembly` configuration
   (Principle XI).
+- Encryption and masking of SENSITIVE fields, and the identity port, MUST be
+  wired in `spring-boot-assembly` configuration: the cipher adapter next to the
+  persistence adapter, and an anonymous actor adapter wherever no authentication
+  exists yet (Principles XIII and XVI).
 - Configuration MUST be externalized per environment (Principles IX and XII).
 
 ## Governance
@@ -632,9 +875,15 @@ favor of the constitution.
   principles/sections or materially expanded guidance, PATCH for
   clarifications, wording, or typo fixes.
 - Compliance review is MANDATORY: all specs, plans, tasks, and pull requests
-  MUST verify adherence to Principles I-XII and record any boundary, DI,
-  contract, data-ownership, or scope-classification decisions.
+  MUST verify adherence to Principles I-XVII and record any boundary, DI,
+  contract, data-ownership, scope-classification, sensitivity-classification,
+  or access-control decisions.
+- Security obligations that cannot be mechanically verified MUST appear as
+  named review-checklist items rather than being left implicit.
+- Accepting a security risk without mitigation, or downgrading a field's
+  sensitivity classification, MUST be recorded in the plan with an owner and a
+  rationale; an unrecorded downgrade is a violation.
 - Reclassifying a service between core and non-core is an amendment-class
   change and MUST follow the amendment procedure above.
 
-**Version**: 2.1.0 | **Ratified**: 2026-09-23 | **Last Amended**: 2026-09-23
+**Version**: 2.2.0 | **Ratified**: 2026-09-23 | **Last Amended**: 2026-09-24
