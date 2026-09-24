@@ -1,47 +1,76 @@
 <!-- Sync Impact Report
-Version change: 2.1.0 -> 2.2.0 (MINOR: five new security principles + expanded guidance)
+Version change: 2.2.0 -> 2.3.0 (MINOR: five new principles, materially
+  expanded guidance in eight existing principles, ten new quality gates)
 Modified principles (rules added, no rule removed or redefined):
-- V. Contract-First REST Driving Ports (OpenAPI) - contract strictness and
-  response-exposure limits now cite Principle XV
-- VII. External Web Services via Simple Proxy Web Services - egress allowlist
-  (SSRF), untrusted vendor payloads, proxy credential handling
-- X. Data Ownership & Cross-Service Consistency - sensitive data MUST NOT be
-  copied into events or commands
-- XI. Production Readiness: Resilience & Observability - log hygiene, redaction,
-  audit-stream separation, per-business-key velocity limits, abuse alerting,
-  capacity headroom and load-amplification tests
-- XII. Independent Deployability & Evolution - gateway edge duties separated
-  from in-service authorization
+- VI. Kafka + AsyncAPI - per-topic key/ordering/competing-consumer policy,
+  atomic duplicate suppression, named outbox relay, resumability and
+  relay-lag alerting, broker-outage recoverability
+- IX. Service Boundaries & Ownership - greenfield rule and strangler-fig
+  migration guidance with recorded extraction order and glue choice
+- XII. Independent Deployability & Evolution - deployment platform and
+  service-discovery mechanism MUST be recorded; one database instance per
+  service instance; registry MUST NOT be a routing single point of failure
+- XIII. Sensitive Data Protection - read-once mechanics (single release,
+  final, non-serialisable, transient fields, masked toString, defensive
+  copies) and the recorded-exception path for repeated reads
+- XIV. Untrusted Input & Valid-by-Construction Domain Model - value-based
+  equality over a canonical form, construction as the only failure point,
+  null is not absence, canonical/confusable text, parameterised data access
+- XV. Secure HTTP Contracts & Response Minimisation - output encoding on
+  rendered surfaces, page-bounded collection responses, 404-vs-403
+  existence policy
+- XVI. Identity-Ready, Default-Deny Authorization - per-instance
+  object-level authorization with ownership predicate in the matrix,
+  algorithm allow-list rejecting alg=none, provider-issued tokens preferred
+- XVII. Secrets, Keys & Secure Baseline Configuration - CORS allow-list,
+  centralised security headers, no-store for SENSITIVE responses, no tokens
+  in URLs, header and TLS smoke test
 Added principles:
-- XIII. Sensitive Data Protection
-- XIV. Untrusted Input & Valid-by-Construction Domain Model
-- XV. Secure HTTP Contracts & Response Minimisation
-- XVI. Identity-Ready, Default-Deny Authorization
-- XVII. Secrets, Keys & Secure Baseline Configuration
+- XVIII. Saga Design & Compensation (NON-NEGOTIABLE)
+- XIX. Aggregate & Transaction Boundaries (NON-NEGOTIABLE)
+- XX. Transport Security & Workload Identity (NON-NEGOTIABLE)
+- XXI. API Lifecycle, Deprecation & Change Communication
+- XXII. Security Governance: Risk Acceptance, Disclosure & Incident Response
 Added guidance:
-- Technology Constraints: security tooling slots (contract lint with an OWASP
-  rule set, contract fuzzing, secret and dependency scanning, encryption with
-  versioned keys, future authentication stack) marked (decision needed); no
-  library is pinned until the decision is recorded
-- Development Workflow: gates (12) threat model is a plan artifact,
-  (13) threat-to-test traceability, (14) security-aware contract lint and
-  contract fuzzing, (15) negative-input suite returning documented 4xx only,
-  (16) access-control regression and redaction tests, (17) secret and
-  dependency scans, (18) the security stage blocks merge
-- Governance: compliance review covers I-XVII; downgrading a sensitivity
-  classification is recorded and reviewed in the plan
+- Appendix A: outbox relay naming in `spring-boot-assembly`, and the ADR
+  location for boundary/classification/sensitivity decisions
+- Technology Constraints: service discovery and deployment platform, test
+  tooling, transport security, event store, and ADR slots marked (decision
+  needed); no library is pinned until the decision is recorded
+- Development Workflow: test taxonomy and deployment-pipeline stages are
+  recorded; gates (19) saga step semantics and compensation idempotency,
+  (20) isolation countermeasure per anomaly, (21) aggregate boundary rules
+  under ArchUnit, (22) ordering, duplicate suppression, and relay survival
+  of a broker outage, (23) test taxonomy including provider-side contract
+  verification, (24) pipeline stages with unchanged promotion, (25) transport
+  security assertion, (26) object-level authorization and existence
+  non-disclosure, (27) deprecation/sunset and de-provisioning, (28) ADR
+  presence and no expired risk acceptance
+- Governance: compliance review covers I-XXII; risk acceptance MUST expire
+  and be re-reviewed; boundary, classification, and sensitivity decisions
+  MUST be dated ADRs in the repository
 Sources: Daniel Deogun, Dan Bergh Johnsson, Daniel Sawano, "Secure by Design"
-  (Manning, 1st ed., 2019) and Jose Haro Peralta, "Secure APIs: Design, Build,
-  and Implement" (Manning, 1st ed., 2025). Rules are paraphrased from those
-  sources; no book text is quoted.
+  (Manning, 1st ed., 2019); Jose Haro Peralta, "Secure APIs: Design, Build,
+  and Implement" (Manning, 1st ed., 2025); Chris Richardson, "Microservices
+  Patterns: With examples in Java" (Manning, 1st ed., 2019). Rules are
+  paraphrased from those sources; no book text is quoted.
+Provenance correction: the non-enumerable identifier rule in Principle XV
+  (server-generated value with at least 122 bits of randomness) is drawn from
+  "Secure APIs" (predictable identifiers), not from "Secure by Design"; the
+  rule itself is unchanged.
 Removed sections: none
 Follow-up TODOs:
 - TODO(SECURITY_TOOLING): pin the contract-linting, fuzzing, secret-scanning,
   dependency-scanning, and encryption libraries in Technology Constraints.
+- TODO(PLATFORM): record the service-discovery mechanism and the deployment
+  platform (Principles XII and XX) before the first inter-service call.
+- TODO(TEST_TOOLING): pin the acceptance-test and contract-test tooling
+  (gate 23) before the first provider-side contract test is required.
 - TODO(SPEC_001): refresh specs/001-register-corporate-behalf/spec.md for
-  Principles XIII-XVII (non-enumerable application ID, anonymous-actor fields,
-  validation order and size limits, audit-trail vs hard-delete tension, and the
-  manual queue as an audited operation).
+  Principles XIII-XXII (non-enumerable application ID, anonymous-actor fields,
+  validation order and size limits, audit-trail vs hard-delete tension, the
+  manual queue as an audited operation, saga step classification, aggregate
+  boundary and object-level matrix rows, and the deprecation policy).
 NOTE: temporary scratch material for human review; MUST be removed before commit.
 -->
 
@@ -190,6 +219,18 @@ Rules:
 - Publication MUST NOT occur before the local transaction commits; where
   emission must be atomic with a state change, a transactional outbox MUST be
   used (Principle X).
+- Every topic MUST declare in the AsyncAPI document its message key, its
+  ordering requirement, and its competing-consumer policy. Messages whose order
+  matters MUST be keyed by aggregate identity so that they travel one shard and
+  are consumed in order.
+- Every consumer MUST record processed message ids and suppress duplicates in
+  the same local transaction as the effect, so a redelivery cannot apply twice.
+- The outbox relay mechanism MUST be named in the plan (polling publisher or
+  transaction-log tailing) and MUST be resumable after a restart without losing
+  or reordering committed messages.
+- Relay lag MUST be exposed as a metric and MUST alert; a broker outage MUST NOT
+  lose committed state, and messages that could not be published MUST remain
+  republishable from the outbox (Principle XI).
 
 Rationale: a documented, versioned asynchronous contract keeps publishers
 and consumers independently deployable and the core transport-agnostic.
@@ -278,6 +319,14 @@ Rules:
   services, with all configuration externalized per environment.
 - A boundary MUST be introduced or changed only with the decision recorded in
   the plan: the capability or subdomain, the owning team, and the data owned.
+- Greenfield services MUST be built whole. The strangler-fig approach applies
+  only where a monolith is being replaced: new features MUST be implemented as
+  services first, and extraction MUST be prioritised by change frequency,
+  coupling, and business value, with the order recorded in the plan.
+- Where a service is extracted from a monolith, the integration glue between the
+  monolith and the new service (API, event, or database view) MUST be chosen
+  deliberately and recorded; the monolith MUST keep working throughout, and each
+  extraction MUST be reversible until caller migration completes.
 
 Rationale: boundaries drawn on the business rather than on layers keep teams
 autonomous and coupling low; self-containment keeps user-facing latency
@@ -393,6 +442,14 @@ Rules:
   business authorization stays inside the services (Principle XVI).
 - CI MUST enforce the deployment-pipeline gates in Development Workflow before
   an artefact can be promoted.
+- The deployment platform MUST be recorded in the plan and MUST give each
+  service isolated instances with their own database instance; a shared
+  deployment unit or shared database instance across services is FORBIDDEN
+  (Principle X).
+- The service-discovery mechanism MUST be recorded in the plan. The platform's
+  own registry and DNS resolution MUST be preferred; self-registration or
+  third-party registration MUST be justified, tested against a registry
+  restart, and MUST NOT become a routing single point of failure.
 
 Rationale: independent deployability is the property that justifies the
 architecture's cost, and contract plus schema discipline is what preserves it.
@@ -411,6 +468,12 @@ Rules:
   responses, dead-letter messages, or events. They MUST travel in a read-once
   domain primitive that permits a single release at the one place that needs
   it: the encryption adapter, or the masked projection returned to a caller.
+- A read-once primitive MUST release its value exactly once and MUST throw on
+  re-release. It MUST be final, MUST NOT be serialisable, MUST mark sensitive
+  fields transient, MUST mask its value in `toString()`, and MUST hand out
+  defensive copies for any mutable carrier such as `char[]`. Where a value is
+  legitimately read more than once, the exception MUST be recorded in the plan
+  with its justification.
 - SENSITIVE data MUST be encrypted at rest, and the key version used MUST be
   stored with the ciphertext so keys can be rotated without rewriting history.
 - Responses MUST expose the minimum projection the consumer needs; a government
@@ -458,6 +521,20 @@ Rules:
   invariant without a failing-case test is not verified.
 - Domain primitives MUST NOT be published across a boundary (Principle I): HTTP,
   Kafka, and proxy contracts carry DTOs mapped at the adapter edge.
+- A domain primitive MUST define value-based `equals` and `hashCode` over one
+  canonical representation, and two instances built from equal input MUST be
+  interchangeable.
+- Construction MUST be the only place a domain primitive can fail: an existing
+  instance MUST NOT throw on read or on a legal transition, and MUST NOT be
+  mutable through any reference it hands out.
+- `null` MUST NOT represent absence; absence MUST be an explicit domain concept
+  (for example an `Empty` value or an optional domain primitive).
+- Lexical validation MUST state the canonical form it accepts, and text MUST be
+  normalised to that form before comparison; confusable or homoglyph input MUST
+  be rejected rather than silently folded.
+- Data access MUST be parameterised: SQL, JPQL, and any query text built by
+  interpolating caller input are FORBIDDEN, and dynamic query fragments MUST come
+  from allow-listed code constants.
 
 Rationale: validating once, in one place, at the boundary removes defensive
 re-checks from the whole codebase and leaves every reachable state a legal one.
@@ -492,6 +569,14 @@ Rules:
   back to the caller.
 - Every exposed endpoint MUST be registered against a versioned contract in the
   API inventory; an undocumented or shadow route MUST be treated as an incident.
+- Collection responses MUST be page-bounded with a declared maximum page size; a
+  response whose size grows without a bound MUST NOT be exposed.
+- Every value rendered into HTML, JavaScript, a URL, or an operator-facing view
+  MUST be output-encoded for that context; input validation MUST NOT be treated
+  as a substitute for output encoding.
+- The policy for absent versus forbidden resources (404 versus 403) MUST be
+  recorded per resource type and MUST NOT disclose the existence of a resource
+  the caller is not permitted to access.
 
 Rationale: a strict contract is the only point that can reject unknown input and
 refuse to over-share output before any domain code runs, so exposure becomes a
@@ -510,6 +595,10 @@ Rules:
 - Every operation MUST appear in an access-control matrix in the plan naming the
   permitted actor class, including the degenerate no-authentication case. An
   operation with no matrix row MUST fail review.
+- Access control MUST be object-level, not operation-level: every access to a
+  resource instance MUST verify that the actor is permitted on THAT instance,
+  and each matrix row MUST record the ownership or scoping predicate that
+  decides it. An operation-level check alone is a defect.
 - Authorization MUST be enforced inside the core or its ports for every
   operation; the gateway MUST NOT be the only enforcement point. Internal
   service-to-service endpoints MUST receive the same validation as public ones;
@@ -524,6 +613,11 @@ Rules:
 - Administrative, manual, and back-office actions MUST be first-class,
   authenticated, audit-logged operations of the service; using standing direct
   database access to change state is FORBIDDEN.
+- Token verification MUST use an algorithm allow-list that rejects `alg=none`
+  case-insensitively, MUST bind issuer, audience, and expiry with a bounded clock
+  skew, and SHOULD accept asymmetric algorithms only.
+- Tokens SHOULD be issued and rotated by a managed provider rather than by this
+  platform; issuing tokens ourselves REQUIRES the decision recorded in the plan.
 
 Rationale: retrofitting identity is most expensive exactly where it matters
 most, so identity is threaded through the design from v1 even when it is
@@ -551,9 +645,153 @@ Rules:
   generic; and security headers MUST be set at the edge.
 - Feature toggles MUST be owned, time-boxed, and audited, and MUST NOT
   substitute for a release strategy.
+- CORS MUST use an explicit origin allow-list; a wildcard origin combined with
+  credentials is FORBIDDEN, and the policy MUST be asserted by test.
+- Security response headers (at least `X-Content-Type-Options: nosniff`, a
+  content security policy, and `frame-ancestors` where the API is browsable)
+  MUST be set centrally in middleware and asserted by a deployment smoke test;
+  responses carrying SENSITIVE data MUST set `Cache-Control: no-store`.
+- Tokens, secrets, and session identifiers MUST NOT travel in URLs, query
+  strings, or referrers.
 
 Rationale: configuration and secrets are the shortest path from a small mistake
 to a breach, so they are externalized, validated, rotatable, and default-deny.
+
+### XVIII. Saga Design & Compensation (NON-NEGOTIABLE)
+
+Every cross-service consistency flow MUST be designed as a saga whose steps and
+compensations are explicit, classified, and testable.
+
+Rules:
+- Every saga step MUST be classified in the plan as compensatable, pivot, or
+  retryable, and the classification MUST be visible in the code that implements
+  the step.
+- A saga MUST contain at most one pivot step; every step after the pivot MUST be
+  retryable, so the flow can always be completed forward.
+- Compensating actions MUST be idempotent, MUST tolerate replay and out-of-order
+  delivery, and MUST NOT fail the saga when the step they compensate never
+  committed.
+- Saga state MUST be persisted after every step and the coordinator MUST be
+  replay-safe; an in-memory coordinator is FORBIDDEN.
+- Because sagas are not isolated, every anomaly the flow can produce MUST have a
+  named countermeasure in the plan: semantic lock, commutative update,
+  pessimistic view, or reread value.
+- Coordination style (choreography or orchestration) MUST be justified against
+  complexity, coupling, and observability criteria recorded in the plan, not
+  merely noted.
+- Every saga MUST define its terminal state for exhausted retries, and that
+  terminal state MUST be an audited, operator-visible outcome (Principle XI).
+
+Rationale: a saga is the only permitted cross-service consistency mechanism
+(Principle X), so its rollback path carries the same weight as its happy path and
+must be designed, classified, and tested rather than improvised.
+
+### XIX. Aggregate & Transaction Boundaries (NON-NEGOTIABLE)
+
+The aggregate is the unit of consistency: it defines what one local transaction
+may change and what MUST be arranged as a saga.
+
+Rules:
+- One local transaction MUST create or update exactly one aggregate; changing two
+  aggregates atomically is FORBIDDEN and MUST be arranged as a saga
+  (Principle XVIII) or through an eventual consistency flow.
+- Aggregates MUST reference other aggregates by identity only; object references
+  across aggregate boundaries are FORBIDDEN, and only the aggregate root MAY be
+  referenced or mutated from outside its aggregate.
+- Consistency between aggregates of one service MUST be eventual, driven by
+  domain events derived from aggregate state; an event MUST be derivable from one
+  aggregate and MUST be returned to the caller or published by an adapter, never
+  emitted from inside a domain type (Principle VI).
+- Each aggregate root MUST have exactly one repository port, and no repository or
+  adapter MAY span two aggregate roots.
+- Aggregate boundaries and the invariant each one protects MUST be recorded in
+  the plan; an aggregate with no stated invariant is a violation.
+- Event sourcing MAY be used as the persistence model for an aggregate only when
+  the plan records the justification, the snapshot and replay strategy,
+  optimistic-concurrency handling, and the stored-event versioning policy;
+  without that record it is FORBIDDEN.
+- Stored and published domain events MUST evolve additively, and every reader
+  MUST tolerate older event versions.
+
+Rationale: aggregate boundaries decide whether a change is a local transaction
+or a saga, so they are a design decision rather than an implementation detail,
+and they are what makes the consistency rules of Principle X enforceable.
+
+### XX. Transport Security & Workload Identity (NON-NEGOTIABLE)
+
+Every network hop MUST be encrypted, and the identity of the workload making a
+call MUST be verifiable independently of the network it sits on.
+
+Rules:
+- All traffic - client to gateway, service to service, and proxy egress - MUST use
+  TLS; plaintext HTTP is FORBIDDEN in every deployed environment.
+- TLS 1.2 MUST be the minimum accepted version; TLS 1.0 and 1.1 and any protocol
+  or cipher outside an explicit allow-list MUST be disabled and asserted by test.
+- Externally reachable hosts MUST send HSTS with a minimum one-year max-age and
+  MUST redirect plain HTTP to HTTPS.
+- Service-to-service calls SHOULD use mutual TLS with short-lived, rotatable
+  certificates. Terminating TLS at the gateway MUST NOT discard the identity of
+  the originating workload: the callee MUST still validate it (Principle XVI).
+- Certificate, key, and trust-store rotation MUST NOT require a coordinated
+  release (Principle XVII).
+- The deployed environment MUST be asserted by a test or smoke check that refuses
+  connections below the minimum TLS version and reports the negotiated version.
+
+Rationale: without transport identity, "internal" is an assumption rather than a
+control, and every in-service authorization decision (Principle XVI) rests on an
+unverified caller.
+
+### XXI. API Lifecycle, Deprecation & Change Communication
+
+A published API version has a lifecycle, and retiring one is a scheduled,
+communicated act rather than a deletion.
+
+Rules:
+- Every exposed version MUST carry a lifecycle state (active, deprecated, or
+  retired) in the API inventory required by Principle XV.
+- Deprecation MUST be announced with `Deprecation` and `Sunset` response headers
+  plus a `Link` to the migration note, over a minimum notice period recorded in
+  the plan.
+- A retired version MUST be de-provisioned at the gateway so it cannot be
+  re-exposed accidentally, and a retired version label MUST NOT be reused for a
+  new contract.
+- Breaking changes MUST follow Principle V for HTTP and Principle VI for topics,
+  and the number of simultaneously supported versions MUST be bounded and
+  recorded in the plan.
+- Consumers of a deprecated version MUST be identifiable from telemetry before
+  retirement is scheduled.
+
+Rationale: additive evolution (Principle XII) preserves consumers only if the end
+of a version's life is declared, communicated, and enforced instead of drifting.
+
+### XXII. Security Governance: Risk Acceptance, Disclosure & Incident Response
+
+Security decisions that are not implemented MUST be recorded as owned,
+time-boxed risk, and security failures MUST have a defined path from report to
+fix.
+
+Rules:
+- Accepting a security risk without mitigation MUST record the owner, the
+  rationale, the compensating controls, and an expiry date. An acceptance with no
+  expiry is invalid, and an expired acceptance MUST be re-reviewed and either
+  renewed or fixed.
+- Downgrading a sensitivity classification (Principle XIII) MUST be recorded in
+  the plan with an owner and a rationale, and MUST be re-reviewed at the next
+  compliance review.
+- An externally reachable channel for vulnerability reports MUST exist and be
+  published; reports MUST be triaged against a stated window and tracked to
+  closure.
+- A confirmed exposure of SENSITIVE data or credentials MUST be handled as an
+  incident: contained, rotated (Principle XVII), assessed against notification
+  duties, and followed by corrective actions that trace to a test, a gate, or a
+  constitution amendment.
+- Compliance review covers Principles I-XXII, and every boundary, classification,
+  and sensitivity decision MUST have a dated architecture decision record (ADR)
+  in the repository rather than existing only inside a transient plan.
+
+Rationale: unrecorded risk acceptance and undocumented decisions are how a
+security posture erodes silently, and an unowned disclosure channel turns a
+small defect into an unmanaged incident.
 
 ## Technology Constraints & Build Standards
 
@@ -586,6 +824,24 @@ verified in CI. The pinned integration stack is:
   data MUST use a managed key store with versioned keys (Principle XIII), and
   the future authentication stack MUST be an OIDC provider with JWT
   verification (Principle XVI); libraries MUST be pinned once chosen.
+- **Deployment platform and service discovery** (decision needed): the platform
+  (one container instance per service on Kubernetes, VM, or serverless) and the
+  discovery mechanism (platform registry and DNS, self-registration, or
+  third-party registration) MUST be recorded in the plan before the first
+  inter-service call (Principle XII).
+- **Test tooling** (decision needed): executable acceptance specifications and
+  contract-test tooling for both the consumer and the provider side MUST be
+  chosen and pinned before gate 23 is required.
+- **Transport security** (decision needed): TLS and mTLS configuration, HSTS, and
+  the central header and CORS middleware MUST be pinned (Principle XX) before any
+  environment is exposed beyond local development.
+- **Event store and saga support** (decision needed): where an aggregate is
+  event-sourced (Principle XIX), the event store, snapshot policy, and
+  optimistic-concurrency implementation MUST be pinned in the plan that justifies
+  it.
+- **Decision records** (decision needed): the ADR location and format MUST be
+  chosen so that boundary, classification, and sensitivity decisions have a
+  durable home (Principle XXII).
 
 Rules:
 - Persistence, web (Spring MVC), and messaging clients MUST reside ONLY in
@@ -635,9 +891,36 @@ service (Principle VIII) before merge:
   matrix of Principle XVI, plus a redaction test proving that no SENSITIVE value
   reaches logs, traces, or error bodies; (17) secret and dependency
   vulnerability scans; (18) a security stage that blocks merge while red.
+- Test taxonomy: every test MUST be classified as unit, integration, component,
+  contract, or end-to-end, and the classification MUST match what the test
+  actually verifies. Unit tests cover domain logic with no framework and no I/O;
+  integration tests cover an adapter against its real dependency; component tests
+  exercise one service in isolation with doubles for every service it calls;
+  contract tests verify the published interface from BOTH the consumer and the
+  provider side; end-to-end tests cover only critical journeys. A coverage
+  percentage MUST NOT be used as a substitute for these categories.
+- Deployment pipeline: the pipeline stages (pre-commit, commit, acceptance, and
+  production release) MUST be defined in the plan, and an artefact MUST be built
+  once and promoted unchanged through every stage (Principle XII).
+- Principles XVIII-XXII add these gates: (19) saga steps classified with at most
+  one pivot, and compensation idempotency proven under replay and out-of-order
+  delivery; (20) a named countermeasure per isolation anomaly, with a test that
+  reproduces the anomaly; (21) ArchUnit (or equivalent) rules proving one
+  aggregate root per transaction, identity-only cross-aggregate references, and
+  every domain event traceable to one aggregate; (22) ordering preserved and
+  duplicates suppressed for keyed topics, a relay test that survives a broker
+  outage, and a relay-lag alert; (23) the test taxonomy above recorded per test,
+  including provider-side contract verification; (24) pipeline stages defined
+  with unchanged artefact promotion; (25) a transport-security assertion that
+  refuses connections below the minimum TLS version and reports the negotiated
+  version; (26) an object-level authorization regression test per resource type,
+  plus an existence-non-disclosure assertion (Principle XVI); (27) deprecation
+  and `Sunset` headers asserted and retired versions verified as de-provisioned;
+  (28) ADR presence for boundary, classification, and sensitivity decisions, and
+  no expired risk acceptance left unreviewed.
 - End-to-end tests MUST be limited to a small set of critical user journeys and
   MUST NOT be the primary verification mechanism.
-- Violations of Principles I-XVII MUST block merge; justified exceptions
+- Violations of Principles I-XXII MUST block merge; justified exceptions
   require a constitution amendment, not an ad-hoc waiver.
 
 ## Appendix A: Normative Directory Structure Template
@@ -861,6 +1144,11 @@ Cross-cutting wiring for core-domain services:
   persistence adapter, and an anonymous actor adapter wherever no authentication
   exists yet (Principles XIII and XVI).
 - Configuration MUST be externalized per environment (Principles IX and XII).
+- The outbox relay mechanism (polling publisher or transaction-log tailing) and
+  its lag metric MUST be named in `spring-boot-assembly` configuration
+  (Principle VI).
+- Architecture decision records MUST live in `docs/adr/` (or the location
+  recorded in the plan) as dated, immutable Markdown files (Principle XXII).
 
 ## Governance
 
@@ -875,15 +1163,20 @@ favor of the constitution.
   principles/sections or materially expanded guidance, PATCH for
   clarifications, wording, or typo fixes.
 - Compliance review is MANDATORY: all specs, plans, tasks, and pull requests
-  MUST verify adherence to Principles I-XVII and record any boundary, DI,
+  MUST verify adherence to Principles I-XXII and record any boundary, DI,
   contract, data-ownership, scope-classification, sensitivity-classification,
-  or access-control decisions.
+  access-control, saga-and-aggregate, lifecycle, or transport-security
+  decisions.
 - Security obligations that cannot be mechanically verified MUST appear as
   named review-checklist items rather than being left implicit.
 - Accepting a security risk without mitigation, or downgrading a field's
-  sensitivity classification, MUST be recorded in the plan with an owner and a
-  rationale; an unrecorded downgrade is a violation.
+  sensitivity classification, MUST be recorded in the plan with an owner, a
+  rationale, any compensating controls, and an expiry date; an unrecorded
+  downgrade or an acceptance without an expiry is a violation (Principle XXII).
+- Boundary, classification, and sensitivity decisions MUST have a dated
+  architecture decision record in the repository; a decision that exists only in
+  a plan document is not recorded (Principle XXII).
 - Reclassifying a service between core and non-core is an amendment-class
   change and MUST follow the amendment procedure above.
 
-**Version**: 2.2.0 | **Ratified**: 2026-09-23 | **Last Amended**: 2026-09-24
+**Version**: 2.3.0 | **Ratified**: 2026-09-23 | **Last Amended**: 2026-09-25
